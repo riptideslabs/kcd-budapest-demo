@@ -1,0 +1,13 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  # Lima forwards this port to the Mac, so kubectl runs there.
+  apiServerAddress: 127.0.0.1
+  apiServerPort: 7443
+nodes:
+- role: control-plane
+  extraMounts:
+  # SPIRE server data (keys + datastore) lives in the VM, so the JWKS you
+  # registered with Anthropic survives `make down && make up`.
+  - hostPath: /var/lib/kcd-demo/spire-server
+    containerPath: /var/lib/spire-server

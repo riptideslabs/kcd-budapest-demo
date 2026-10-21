@@ -1,0 +1,41 @@
+# The client: plain curl, no key, no Secrets, no service account token.
+# Step 3 adds the egress proxy sidecar (egress-proxy-patch.yaml).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: support-bot
+  namespace: support
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: support-bot
+  namespace: support
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: support-bot
+  template:
+    metadata:
+      labels:
+        app: support-bot
+    spec:
+      serviceAccountName: support-bot
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 2
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: app
+        image: curlimages/curl:8.16.0
+        command: ["sh", "-c", "trap 'exit 0' TERM; sleep 2147483647 & wait"]
+        securityContext:
+          runAsUser: 101
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]

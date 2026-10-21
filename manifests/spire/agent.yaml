@@ -1,0 +1,142 @@
+# SPIRE agent: one per node. Attests itself to the server with a projected
+# service account token (k8s_psat) and serves the Workload API on a socket in
+# /run/spire/agent-sockets on the node.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-agent
+  namespace: spire
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-agent
+rules:
+# The k8s workload attestor asks the kubelet which pod a caller belongs to.
+- apiGroups: [""]
+  resources: ["pods", "nodes", "nodes/proxy"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-agent
+subjects:
+- kind: ServiceAccount
+  name: spire-agent
+  namespace: spire
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-agent
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-agent
+  namespace: spire
+data:
+  agent.conf: |
+    agent {
+      data_dir = "/run/spire"
+      log_level = "INFO"
+      server_address = "spire-server.spire.svc"
+      server_port = "8081"
+      socket_path = "/run/spire/agent-sockets/spire-agent.sock"
+      trust_bundle_path = "/run/spire/bundle/bundle.crt"
+      trust_domain = "${TRUST_DOMAIN}"
+    }
+
+    plugins {
+      NodeAttestor "k8s_psat" {
+        plugin_data {
+          cluster = "${CLUSTER_NAME}"
+        }
+      }
+
+      KeyManager "memory" {
+        plugin_data {}
+      }
+
+      WorkloadAttestor "k8s" {
+        plugin_data {
+          # kind's kubelet serves a self-signed certificate.
+          skip_kubelet_verification = true
+        }
+      }
+    }
+
+    health_checks {
+      listener_enabled = true
+      bind_address = "0.0.0.0"
+      bind_port = "9982"
+      live_path = "/live"
+      ready_path = "/ready"
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: spire-agent
+  namespace: spire
+spec:
+  selector:
+    matchLabels:
+      app: spire-agent
+  template:
+    metadata:
+      labels:
+        app: spire-agent
+    spec:
+      serviceAccountName: spire-agent
+      # The agent maps a caller's PID to its container, so it needs the host PID namespace.
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: spire-agent
+        image: ghcr.io/spiffe/spire-agent:1.15.5
+        args: ["-config", "/run/spire/config/agent.conf", "-expandEnv"]
+        envFrom:
+        - configMapRef:
+            name: spire-settings
+        livenessProbe:
+          httpGet:
+            path: /live
+            port: 9982
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 9982
+          periodSeconds: 5
+        volumeMounts:
+        - name: config
+          mountPath: /run/spire/config
+          readOnly: true
+        - name: bundle
+          mountPath: /run/spire/bundle
+          readOnly: true
+        - name: sockets
+          mountPath: /run/spire/agent-sockets
+        - name: token
+          mountPath: /var/run/secrets/tokens
+      volumes:
+      - name: config
+        configMap:
+          name: spire-agent
+      - name: bundle
+        configMap:
+          name: spire-bundle
+      - name: sockets
+        hostPath:
+          path: /run/spire/agent-sockets
+          type: DirectoryOrCreate
+      - name: token
+        projected:
+          sources:
+          - serviceAccountToken:
+              path: spire-agent
+              expirationSeconds: 7200
+              audience: spire-server

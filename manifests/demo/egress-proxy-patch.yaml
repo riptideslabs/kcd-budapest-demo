@@ -1,0 +1,57 @@
+# Step 3: turn on the egress proxy for the pod.
+#   kubectl patch deployment support-bot --patch-file manifests/demo/egress-proxy-patch.yaml
+# Adds the sidecar and points the app at it. The app itself doesn't change.
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        env:
+        - name: HTTPS_PROXY
+          value: http://127.0.0.1:3128
+        # The proxy's CA, so the app trusts the intercepted connection.
+        - name: CURL_CA_BUNDLE
+          value: /run/egress-proxy/ca.crt
+        volumeMounts:
+        - name: egress-proxy
+          mountPath: /run/egress-proxy
+          readOnly: true
+      - name: egress-proxy
+        image: egress-proxy:dev
+        imagePullPolicy: Never
+        # Anthropic organization, workspace, service account and federation
+        # rule IDs. Identifiers, not secrets.
+        envFrom:
+        - configMapRef:
+            name: anthropic-wif
+        env:
+        - name: SPIFFE_ENDPOINT_SOCKET
+          value: unix:///run/spire/agent-sockets/spire-agent.sock
+        readinessProbe:
+          exec:
+            command: ["egress-proxy", "healthcheck"]
+          periodSeconds: 2
+        securityContext:
+          runAsUser: 65532
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: spire-agent-socket
+          mountPath: /run/spire/agent-sockets
+          readOnly: true
+        - name: egress-proxy
+          mountPath: /run/egress-proxy
+      volumes:
+      # Only the sidecar mounts the SPIRE agent socket. Production would use
+      # the SPIFFE CSI driver instead of a hostPath.
+      - name: spire-agent-socket
+        hostPath:
+          path: /run/spire/agent-sockets
+          type: Directory
+      # Holds the proxy's CA certificate. The CA key stays in the proxy's memory.
+      - name: egress-proxy
+        emptyDir:
+          medium: Memory
+          sizeLimit: 1Mi
