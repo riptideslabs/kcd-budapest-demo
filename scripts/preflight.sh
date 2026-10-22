@@ -11,6 +11,9 @@ fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; fails=$((fails + 1)); }
 kubectl get --raw /readyz >/dev/null 2>&1 && pass "cluster reachable" || { fail "cluster not reachable (make up)"; exit 1; }
 
 wait_spire 180 && pass "SPIRE server and agent ready" || fail "SPIRE not ready (kubectl -n spire get pods)"
+kubectl -n egress-system rollout status deployment/egress-injector --timeout=60s >/dev/null 2>&1 &&
+  [ -n "$(kubectl get mutatingwebhookconfiguration egress-proxy-injector -o jsonpath='{.webhooks[0].clientConfig.caBundle}')" ] &&
+  pass "injector webhook ready" || fail "injector webhook not ready (make injector)"
 
 if [ -n "${ANTHROPIC_FEDERATION_RULE_ID:-}" ] && [ -n "${ANTHROPIC_SERVICE_ACCOUNT_ID:-}" ] && [ -n "${ANTHROPIC_ORGANIZATION_ID:-}" ]; then
   pass "anthropic.env filled in"
@@ -27,10 +30,12 @@ esac
 
 # Rehearse steps 3-4.
 "$ROOT/scripts/reset.sh" >/dev/null 2>&1
-kubectl -n support patch deployment support-bot --patch-file "$ROOT/manifests/demo/egress-proxy-patch.yaml" >/dev/null
-if kubectl -n support rollout status deployment/support-bot --timeout=90s >/dev/null 2>&1; then
+kubectl label namespace support egress-proxy=enabled >/dev/null
+kubectl -n support rollout restart deployment/support-bot >/dev/null
+if kubectl -n support rollout status deployment/support-bot --timeout=90s >/dev/null 2>&1 &&
+  [ "$(kubectl -n support get pod "$(pod_of support-bot)" -o jsonpath='{.spec.initContainers[*].name}')" = egress-proxy ]; then
   wait_single_pod support-bot
-  pass "egress proxy sidecar starts"
+  pass "the injector adds the egress proxy sidecar"
 
   jwt=$(kubectl -n support exec deploy/support-bot -c egress-proxy -- egress-proxy svid 2>/dev/null || true)
   if [ -n "$jwt" ]; then
@@ -51,7 +56,7 @@ if kubectl -n support rollout status deployment/support-bot --timeout=90s >/dev/
   [ "$code" = 200 ] && pass "a request through the proxy works (GET /v1/models → 200)" ||
     fail "a request through the proxy got HTTP ${code:-error}: $(kubectl -n support logs deploy/support-bot -c egress-proxy --tail=2 2>/dev/null | tr '\n' ' ')"
 else
-  fail "egress proxy sidecar didn't start"
+  fail "no egress proxy sidecar (kubectl -n egress-system logs deploy/egress-injector)"
 fi
 "$ROOT/scripts/reset.sh" >/dev/null 2>&1
 pass "reset to the state before step 1"

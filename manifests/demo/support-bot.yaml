@@ -1,5 +1,5 @@
 # The client: plain curl, no key, no Secrets, no service account token.
-# Step 3 adds the egress proxy sidecar (egress-proxy-patch.yaml).
+# Step 3 labels the namespace; the injector webhook then adds the egress proxy.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

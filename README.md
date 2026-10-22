@@ -7,8 +7,9 @@ exchanges that identity for a short-lived Anthropic token, and an egress proxy
 sidecar adds the token on the way out. The five steps match the deck's demo
 slide.
 
-Everything is open source: kind, SPIRE 1.15, tokenex v0.7.0 and the small
-proxy in [`proxy/`](proxy).
+Everything is open source: kind, SPIRE 1.15, tokenex v0.7.0, and two small Go
+programs in this repo: the proxy in [`proxy/`](proxy) and a mutating admission
+webhook in [`injector/`](injector) that adds the proxy to opted-in pods.
 
 ```
  support-bot pod                                         Anthropic
@@ -22,15 +23,21 @@ proxy in [`proxy/`](proxy).
                     SPIRE agent ── JWT-SVID           (checks the SVID against SPIRE's
                     sub=spiffe://kcd-budapest.demo/     public keys and the federation rule)
                         ns/support/sa/support-bot
+
+ egress-injector (webhook): at pod creation in a namespace labeled
+ egress-proxy=enabled, adds the egress-proxy sidecar, its volumes, and
+ HTTPS_PROXY + CA variables to the app containers.
 ```
 
 ## What's where
 
 | Path | |
 |---|---|
+| `injector/` | The mutating admission webhook. For pods created in namespaces labeled `egress-proxy=enabled`, it adds `egress-proxy` as a native sidecar (it starts and writes its CA before the app does), the SPIRE socket and CA volumes, and `HTTPS_PROXY`, `NO_PROXY` and the CA variables for curl, Go/OpenSSL, Python and Node to every app container. It makes its own serving certificate at startup and writes the CA into its webhook configuration, so it needs no cert-manager. |
 | `proxy/` | The sidecar. Fetches the pod's JWT-SVID (`pkg/token/spiffe`), exchanges it with `rfc7523.GetAnthropicCredentials`, keeps it refreshed, and terminates TLS for `api.anthropic.com` with a per-pod CA that exists only in memory. Every other destination is refused. |
+| `manifests/injector/` | The injector's Deployment, Service, RBAC (patch its own webhook configuration only) and `MutatingWebhookConfiguration` (`failurePolicy: Fail`). |
 | `manifests/spire/` | SPIRE server (k8s_psat node attestation, keys on disk) and agent (k8s workload attestor). |
-| `manifests/demo/` | Namespace `support` with the `support-bot` Deployment (plain curl) and `egress-proxy-patch.yaml`, which step 3 applies to add the sidecar. |
+| `manifests/demo/` | Namespace `support` with the `support-bot` Deployment: plain curl, nothing proxy-related. |
 | `steps/` | The stage script, one file per step. |
 | `scripts/` | Setup, reset, JWKS export and preflight. |
 | `config.env` | Trust domain, `jwt_issuer`, model. |
@@ -48,7 +55,7 @@ make up
 
 The first run takes a few minutes (Ubuntu image, Docker, kind node image,
 SPIRE images). It's idempotent; rerun it whenever. When it's done, the
-cluster has SPIRE running and the curl pod up.
+cluster has SPIRE and the injector running and the curl pod up.
 
 ### Anthropic setup (once)
 
@@ -133,7 +140,7 @@ first; commands are printed exactly as they run.
 |---|---|---|
 | 1. The pod has no key | `make step1` | One pod running curl, `No resources found` for Secrets, `env` with no key, no `/var/run/secrets` |
 | 2. The API call fails | `make step2` | `curl … returned error: 401`, `authentication_error` |
-| 3. Turn on the egress proxy | `make step3` | `kubectl patch` adds the sidecar (and points the app at it with `HTTPS_PROXY` and its CA), rollout, pod is now 2/2 |
+| 3. Turn on the egress proxy | `make step3` | `kubectl label namespace support egress-proxy=enabled`, `kubectl rollout restart`: the injector adds the sidecar, the pod is now 2/2. The Deployment itself doesn't change. |
 | 4. The same command succeeds | `make step4` | The same curl, now Claude's greeting to KCD Budapest |
 | 5. Nothing to steal | `make step5` | A fake exfiltration script checks env, files, Secrets, the SPIRE socket and processes: `Nothing to steal.` |
 
@@ -146,10 +153,16 @@ Things to say if asked:
   token never leaves the sidecar and lives five minutes. There's nothing to
   take home.
 - **The CA?** Generated per pod at startup, private key in memory only. That's
-  the "injection isn't free" cost: the app must trust it.
-- **Production?** SPIFFE CSI driver instead of a hostPath socket, the SPIRE
-  OIDC Discovery Provider with normal key rotation instead of a 90-day key,
-  and a proxy with real HTTP/2 and SigV4 support.
+  the "injection isn't free" cost: the app must trust it, which the injector
+  arranges through environment variables.
+- **What if the injector is down?** Pods in opted-in namespaces aren't
+  created (`failurePolicy: Fail`): a workload that asked for the proxy never
+  runs without it. Other namespaces aren't affected.
+- **Production?** A highly available injector with its certificate from
+  cert-manager (each replica makes its own CA today), the SPIFFE CSI driver
+  instead of a hostPath socket, the SPIRE OIDC Discovery Provider with normal
+  key rotation instead of a 90-day key, and a proxy with real HTTP/2 and SigV4
+  support.
 
 ## Troubleshooting
 
@@ -158,7 +171,8 @@ Things to say if asked:
 | Step 4 returns a `permission_error` from `egress-proxy` | Anthropic refused the exchange. Check **Workload identity → Authentication events** in the Console for the reason. Usually the issuer URL differs from `JWT_ISSUER`, or the registered keys don't contain the current `kid` (`make preflight` checks both). |
 | `api.anthropic.com is intercepted` in preflight | A TLS-inspecting proxy (corporate network, a local MITM proxy) re-signs the traffic and the proxy rejects it. Turn it off or use another network. |
 | `cluster not reachable` | `make up`. It starts the VM, recreates the cluster if needed, and waits until SPIRE has settled, which takes a minute or two after a Mac reboot. |
-| Proxy changes don't show up | `make images reset` rebuilds and reloads the image. |
+| Proxy or injector changes don't show up | `make images injector reset` rebuilds and reloads both. |
+| Step 3's pod stays 1/1, or isn't created | The injector isn't serving: `kubectl -n egress-system logs deploy/egress-injector`, then `make injector`. |
 | Changed `config.env` | `make spire reset`; SPIRE restarts with the new settings. A new `JWT_ISSUER` also needs the Anthropic issuer updated. |
 
 Teardown: `make down` (cluster), `make nuke` (also SPIRE keys),
