@@ -41,7 +41,7 @@ webhook in [`injector/`](injector) that adds the proxy to opted-in pods.
 | `steps/` | The stage script, one file per step. |
 | `scripts/` | Setup, reset, JWKS export and preflight. |
 | `config.env` | Trust domain, `jwt_issuer`, model. |
-| `anthropic.env` | Your Anthropic IDs, and optionally OpenAI's (not committed; copy `anthropic.env.example`). |
+| `providers.env` | Your Anthropic IDs, and optionally OpenAI's (not committed; copy `providers.env.example`). `make reset` puts them in the `egress-proxy-config` ConfigMap the proxy reads. |
 
 ## Setup
 
@@ -100,7 +100,7 @@ keys), only the issuer's keys need updating.
    The last page shows the four IDs and listens for an exchange;
    `make preflight` with the IDs in place triggers one.
 
-4. Put the IDs in `anthropic.env` (template: `anthropic.env.example`), then
+4. Put the IDs in `providers.env` (template: `providers.env.example`), then
    `make preflight`.
 
 The same resources through the Admin API, if you prefer:
@@ -121,7 +121,7 @@ The same resources through the Admin API, if you prefer:
 The proxy isn't tied to Anthropic: it adds a token for every provider whose
 IDs are in the namespace's ConfigMap. To also cover `api.openai.com`, register
 the same SPIRE issuer and the SPIFFE ID in OpenAI's workload identity settings,
-then add the IDs to `anthropic.env` and run `make reset`:
+then add the IDs to `providers.env` and run `make reset`:
 
 ```bash
 OPENAI_IDENTITY_PROVIDER_ID=…

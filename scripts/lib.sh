@@ -8,9 +8,9 @@ STATE="$ROOT/.state"
 set -a
 # shellcheck source=../config.env
 source "$ROOT/config.env"
-if [ -f "$ROOT/anthropic.env" ]; then
+if [ -f "$ROOT/providers.env" ]; then
   # shellcheck disable=SC1091
-  source "$ROOT/anthropic.env"
+  source "$ROOT/providers.env"
 fi
 set +a
 

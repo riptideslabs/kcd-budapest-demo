@@ -25,7 +25,7 @@ const (
 type injector struct {
 	decoder   admission.Decoder
 	image     string
-	configMap string // Anthropic IDs, in the pod's namespace
+	configMap string // provider IDs, in the pod's namespace
 	proxyAddr string
 }
 

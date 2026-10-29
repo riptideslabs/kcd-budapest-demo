@@ -83,7 +83,7 @@ func run() error {
 	mux.Handle("/mutate", &admission.Webhook{Handler: &injector{
 		decoder:   admission.NewDecoder(clientgoscheme.Scheme),
 		image:     envOr("PROXY_IMAGE", "egress-proxy:dev"),
-		configMap: envOr("WIF_CONFIGMAP", "anthropic-wif"),
+		configMap: envOr("PROXY_CONFIGMAP", "egress-proxy-config"),
 		proxyAddr: envOr("PROXY_ADDR", "127.0.0.1:3128"),
 	}})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {

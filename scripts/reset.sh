@@ -2,13 +2,13 @@
 # Put the demo back to the state before step 1: a fresh curl pod, no proxy.
 source "$(dirname "$0")/lib.sh"
 
-[ -f "$ROOT/anthropic.env" ] || log "anthropic.env is missing; the proxy will start but can't get a token"
+[ -f "$ROOT/providers.env" ] || log "providers.env is missing; the proxy will start without any provider"
 
 kubectl delete namespace support --ignore-not-found --wait=true >/dev/null
 kubectl apply -f "$ROOT/manifests/demo/namespace.yaml" >/dev/null
-kubectl -n support create configmap anthropic-wif \
-  --from-env-file="${ANTHROPIC_ENV:-$ROOT/anthropic.env}" >/dev/null 2>&1 ||
-  kubectl -n support create configmap anthropic-wif >/dev/null
+kubectl -n support create configmap egress-proxy-config \
+  --from-env-file="${PROVIDERS_ENV:-$ROOT/providers.env}" >/dev/null 2>&1 ||
+  kubectl -n support create configmap egress-proxy-config >/dev/null
 kubectl apply -f "$ROOT/manifests/demo/support-bot.yaml" >/dev/null
 
 kubectl -n support rollout status deployment/support-bot --timeout=120s >/dev/null

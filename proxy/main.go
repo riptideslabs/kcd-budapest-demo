@@ -104,7 +104,7 @@ func serve(cfg config) error {
 	}
 
 	if len(hosts) == 0 {
-		logf("listening on %s, but no provider is configured: set ANTHROPIC_* or OPENAI_* (see anthropic.env.example)", cfg.listenAddr)
+		logf("listening on %s, but no provider is configured: set ANTHROPIC_* or OPENAI_* (see providers.env.example)", cfg.listenAddr)
 	} else {
 		logf("listening on %s, adding credentials for %s (CA cert in %s)", cfg.listenAddr, strings.Join(hosts, ", "), cfg.caOut)
 	}

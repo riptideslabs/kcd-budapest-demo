@@ -70,8 +70,8 @@ spec:
         - name: PROXY_IMAGE
           value: egress-proxy:dev
         # Each opted-in namespace holds its provider IDs (Anthropic, OpenAI) in this ConfigMap.
-        - name: WIF_CONFIGMAP
-          value: anthropic-wif
+        - name: PROXY_CONFIGMAP
+          value: egress-proxy-config
         ports:
         - containerPort: 8443
         readinessProbe:

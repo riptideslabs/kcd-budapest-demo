@@ -16,9 +16,9 @@ kubectl -n egress-system rollout status deployment/egress-injector --timeout=60s
   pass "injector webhook ready" || fail "injector webhook not ready (make injector)"
 
 if [ -n "${ANTHROPIC_FEDERATION_RULE_ID:-}" ] && [ -n "${ANTHROPIC_SERVICE_ACCOUNT_ID:-}" ] && [ -n "${ANTHROPIC_ORGANIZATION_ID:-}" ]; then
-  pass "anthropic.env filled in"
+  pass "providers.env has the Anthropic IDs"
 else
-  fail "anthropic.env missing or incomplete"
+  fail "providers.env missing or without the Anthropic IDs"
 fi
 
 issuer=$(vm sh -c 'echo | openssl s_client -connect api.anthropic.com:443 -servername api.anthropic.com 2>/dev/null | openssl x509 -noout -issuer' 2>/dev/null || true)
