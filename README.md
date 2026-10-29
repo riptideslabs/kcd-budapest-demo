@@ -141,7 +141,7 @@ first; commands are printed exactly as they run.
 | 1. The pod has no key | `make step1` | One pod running curl, the SPIRE server and agent in `spire`, `No resources found` for Secrets, `env` with no key, no `/var/run/secrets` |
 | 2. The API call fails | `make step2` | `curl … returned error: 401`, `authentication_error` |
 | 3. Turn on the egress proxy | `make step3` | `kubectl label namespace support egress-proxy=enabled`, `kubectl rollout restart`: the injector adds the sidecar, the pod is now 2/2. The Deployment itself doesn't change. |
-| 4. The same command succeeds | `make step4` | The same curl, now Claude's greeting to KCD Budapest. Then the proxy's log: the JWT-SVID SPIRE issued for `spiffe://kcd-budapest.demo/ns/support/sa/support-bot`, the Anthropic token tokenex got for it, and the request going out with that token |
+| 4. The same command succeeds | `make step4` | The same curl, now Claude's greeting to KCD Budapest. Then the pod's JWT-SVID, decoded: `sub` is its SPIFFE ID, `aud` is Anthropic, valid for five minutes. Then the proxy's log: the JWT-SVID SPIRE issued for `spiffe://kcd-budapest.demo/ns/support/sa/support-bot`, the Anthropic token tokenex got for it, and the request going out with that token |
 | 5. Nothing to steal | `make step5` | A fake exfiltration script checks env, files, Secrets, the SPIRE socket and processes: `Nothing to steal.` |
 
 Things to say if asked:

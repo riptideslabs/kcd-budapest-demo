@@ -90,7 +90,9 @@ ASK_CLAUDE="kubectl exec deploy/support-bot -c app -- \\
            \"messages\": [{\"role\": \"user\", \"content\": \"Say hello to KCD Budapest in one sentence.\"}]}' \\
   | jq '.error // .content[0].text'"
 
-# Decode a JWT's header and claims (base64url, no signature check).
+# Decode a JWT's header and claims (base64url, no signature check), with
+# iat and exp as UTC dates.
 decode_jwt() {
-  jq -R 'split(".") | .[0:2][] | gsub("-"; "+") | gsub("_"; "/") | @base64d | fromjson' <<<"$1"
+  jq -R 'split(".") | .[0:2][] | gsub("-"; "+") | gsub("_"; "/") | @base64d | fromjson
+         | if has("exp") then .iat |= todate | .exp |= todate else . end' <<<"$1"
 }
