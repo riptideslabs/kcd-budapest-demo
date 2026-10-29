@@ -15,7 +15,6 @@ import (
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
-	"go.riptides.io/tokenex/pkg/rfc7523"
 	"go.riptides.io/tokenex/pkg/token"
 )
 
@@ -67,12 +66,12 @@ func (s *svidLogger) Subject() string {
 	return s.subject
 }
 
-// credentials keeps a current Anthropic access token. tokenex refreshes it before expiry;
-// when tokenex reports an error (its channel then closes) we back off and start over,
-// or retry right away when a request is waiting for a token.
+// credentials keeps a current access token for one provider. tokenex refreshes it before
+// expiry; when tokenex reports an error (its channel then closes) we back off and start
+// over, or retry right away when a request is waiting for a token.
 type credentials struct {
 	idp token.IdentityTokenProvider
-	wif rfc7523.AnthropicWIFConfig
+	p   *provider
 
 	mu      sync.Mutex
 	access  string
@@ -84,10 +83,10 @@ type credentials struct {
 	kick    chan struct{}
 }
 
-func newCredentials(idp token.IdentityTokenProvider, wif rfc7523.AnthropicWIFConfig) *credentials {
+func newCredentials(idp token.IdentityTokenProvider, p *provider) *credentials {
 	return &credentials{
 		idp:     idp,
-		wif:     wif,
+		p:       p,
 		changed: make(chan struct{}),
 		kick:    make(chan struct{}, 1),
 	}
@@ -97,13 +96,11 @@ func (c *credentials) run(ctx context.Context) {
 	backoff := 2 * time.Second
 
 	for ctx.Err() == nil {
-		var (
-			ch  <-chan rfc7523.Credential
-			err = errMissingIDs
-		)
+		var ch <-chan credential.Result
 
-		if c.wif.FederationRuleID != "" && c.wif.OrganizationID != "" && c.wif.ServiceAccountID != "" {
-			ch, err = rfc7523.GetAnthropicCredentials(ctx, logr.New(&tokenexSink{creds: c}), c.idp, c.wif)
+		err := c.p.missing
+		if err == nil {
+			ch, err = c.p.exchange(ctx, logr.New(&tokenexSink{creds: c}), c.idp)
 		}
 
 		if err != nil {
@@ -149,7 +146,7 @@ func (c *credentials) denied() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return errors.Is(c.lastErr, errMissingIDs) || (c.lastErr != nil && strings.Contains(c.lastErr.Error(), "status 4"))
+	return errors.Is(c.lastErr, errNotConfigured) || (c.lastErr != nil && strings.Contains(c.lastErr.Error(), "status 4"))
 }
 
 func (c *credentials) set(access string, expiry time.Time) {
@@ -160,7 +157,7 @@ func (c *credentials) set(access string, expiry time.Time) {
 	close(c.changed)
 	c.changed = make(chan struct{})
 
-	logf("tokenex: got Anthropic access token %s, expires in %s", redact(access), until(expiry))
+	logf("tokenex: got %s access token %s, expires in %s", c.p.name, redact(access), until(expiry))
 
 	// Either print the refresh line that arrived first, or let it print when it arrives.
 	if c.refresh != "" {
@@ -195,7 +192,7 @@ func (c *credentials) fail(err error) {
 	close(c.changed)
 	c.changed = make(chan struct{})
 
-	logf("tokenex: token exchange failed: %s", describe(err))
+	logf("tokenex: %s token exchange failed: %s", c.p.name, describe(err))
 }
 
 func (c *credentials) valid() (string, bool) {
@@ -244,8 +241,6 @@ func (c *credentials) Get(ctx context.Context) (string, error) {
 
 	return "", c.lastErr
 }
-
-var errMissingIDs = errors.New("ANTHROPIC_FEDERATION_RULE_ID, ANTHROPIC_ORGANIZATION_ID and ANTHROPIC_SERVICE_ACCOUNT_ID are not set")
 
 var apiMessage = regexp.MustCompile(`"message"\s*:\s*"([^"]*)"`)
 

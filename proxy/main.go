@@ -1,14 +1,16 @@
 // Command egress-proxy is the demo's sidecar. It fetches the pod's JWT-SVID from the
-// SPIRE agent, exchanges it for a short-lived Anthropic access token with tokenex,
-// and adds that token to HTTPS requests the app sends through it (HTTPS_PROXY).
+// SPIRE agent, exchanges it with tokenex for a short-lived token from each configured
+// provider (Anthropic, OpenAI), and adds that token to HTTPS requests the app sends
+// through it (HTTPS_PROXY).
 //
-//	egress-proxy              run the proxy
-//	egress-proxy svid         print the pod's JWT-SVID (used by the stage script)
-//	egress-proxy healthcheck  exit 0 if the proxy accepts connections
+//	egress-proxy                  run the proxy
+//	egress-proxy svid [audience]  print the pod's JWT-SVID (used by the stage script)
+//	egress-proxy healthcheck      exit 0 if the proxy accepts connections
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -20,30 +22,20 @@ import (
 
 	_ "golang.org/x/crypto/x509roots/fallback" // the image is FROM scratch
 
-	"go.riptides.io/tokenex/pkg/rfc7523"
 	"go.riptides.io/tokenex/pkg/token/spiffe"
 )
 
 type config struct {
 	listenAddr string
-	injectHost string
-	audience   string
 	caOut      string
-	wif        rfc7523.AnthropicWIFConfig
+	providers  []provider
 }
 
 func loadConfig() config {
 	return config{
 		listenAddr: envOr("LISTEN_ADDR", "127.0.0.1:3128"),
-		injectHost: envOr("INJECT_HOST", "api.anthropic.com"),
-		audience:   envOr("AUDIENCE", "https://api.anthropic.com"),
 		caOut:      envOr("CA_CERT_OUT", "/run/egress-proxy/ca.crt"),
-		wif: rfc7523.AnthropicWIFConfig{
-			FederationRuleID: os.Getenv("ANTHROPIC_FEDERATION_RULE_ID"),
-			OrganizationID:   os.Getenv("ANTHROPIC_ORGANIZATION_ID"),
-			ServiceAccountID: os.Getenv("ANTHROPIC_SERVICE_ACCOUNT_ID"),
-			WorkspaceID:      os.Getenv("ANTHROPIC_WORKSPACE_ID"),
-		},
+		providers:  loadProviders(),
 	}
 }
 
@@ -61,7 +53,7 @@ func main() {
 	case "":
 		err = serve(cfg)
 	case "svid":
-		err = printSVID(cfg)
+		err = printSVID(cfg, os.Args[2:])
 	case "healthcheck":
 		err = healthcheck(cfg)
 	default:
@@ -78,11 +70,6 @@ func serve(cfg config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	idp, err := spiffe.NewIdentityTokenProvider(spiffe.WithAudience(cfg.audience))
-	if err != nil {
-		return err
-	}
-
 	ca, err := newCA()
 	if err != nil {
 		return err
@@ -92,19 +79,38 @@ func serve(cfg config) error {
 		return err
 	}
 
-	svids := &svidLogger{inner: idp}
-	creds := newCredentials(svids, cfg.wif)
-	go creds.run(ctx)
+	routes := map[string]*route{}
+	hosts := []string{}
+
+	for i := range cfg.providers {
+		p := &cfg.providers[i]
+
+		idp, err := spiffe.NewIdentityTokenProvider(spiffe.WithAudience(p.audience))
+		if err != nil {
+			return err
+		}
+
+		svids := &svidLogger{inner: idp}
+		creds := newCredentials(svids, p)
+		go creds.run(ctx)
+
+		routes[p.host] = &route{p: p, creds: creds, svids: svids}
+		hosts = append(hosts, p.host)
+	}
 
 	ln, err := net.Listen("tcp", cfg.listenAddr)
 	if err != nil {
 		return err
 	}
 
-	logf("listening on %s, adding credentials for %s (CA cert in %s)", cfg.listenAddr, cfg.injectHost, cfg.caOut)
+	if len(hosts) == 0 {
+		logf("listening on %s, but no provider is configured: set ANTHROPIC_* or OPENAI_* (see anthropic.env.example)", cfg.listenAddr)
+	} else {
+		logf("listening on %s, adding credentials for %s (CA cert in %s)", cfg.listenAddr, strings.Join(hosts, ", "), cfg.caOut)
+	}
 
 	srv := &http.Server{
-		Handler:           &proxy{host: cfg.injectHost, ca: ca, creds: creds, svids: svids},
+		Handler:           &proxy{ca: ca, routes: routes},
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -120,11 +126,23 @@ func serve(cfg config) error {
 	return nil
 }
 
-func printSVID(cfg config) error {
+// printSVID prints a JWT-SVID for the given audience, or for the first provider's.
+func printSVID(cfg config, args []string) error {
+	var audience string
+
+	switch {
+	case len(args) > 0:
+		audience = args[0]
+	case len(cfg.providers) > 0:
+		audience = cfg.providers[0].audience
+	default:
+		return errors.New("no provider configured; pass an audience")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	idp, err := spiffe.NewIdentityTokenProvider(spiffe.WithAudience(cfg.audience))
+	idp, err := spiffe.NewIdentityTokenProvider(spiffe.WithAudience(audience))
 	if err != nil {
 		return err
 	}

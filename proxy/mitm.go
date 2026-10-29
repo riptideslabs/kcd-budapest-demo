@@ -116,12 +116,17 @@ func serial() *big.Int {
 	return n
 }
 
-// proxy accepts CONNECT for one host, terminates TLS with a certificate from the
-// pod's CA, and forwards each request upstream with the Anthropic token added.
-// Every other destination is refused.
+// proxy accepts CONNECT for the hosts of its configured providers, terminates TLS
+// with a certificate from the pod's CA, and forwards each request upstream with
+// that provider's token added. Every other destination is refused.
 type proxy struct {
-	host  string
-	ca    *ca
+	ca     *ca
+	routes map[string]*route
+}
+
+// route is one provider with its SVID source and current token.
+type route struct {
+	p     *provider
 	creds *credentials
 	svids *svidLogger
 }
@@ -134,7 +139,9 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	host, port, err := net.SplitHostPort(r.Host)
-	if err != nil || host != p.host || port != "443" {
+	rt, ok := p.routes[host]
+
+	if err != nil || !ok || port != "443" {
 		logf("CONNECT %s refused: not an allowed destination", r.Host)
 		http.Error(w, "egress-proxy: destination not allowed", http.StatusForbidden)
 
@@ -175,7 +182,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Serve HTTP/1.1 on the decrypted connection until the client closes it.
 	ln := newConnListener(tlsConn)
 	srv := &http.Server{
-		Handler:           p.forwarder(host),
+		Handler:           rt.forwarder(),
 		ReadHeaderTimeout: 30 * time.Second,
 		ErrorLog:          log.New(io.Discard, "", 0),
 		ConnState: func(_ net.Conn, s http.ConnState) {
@@ -197,13 +204,16 @@ var upstream = &http.Transport{
 
 type tokenKey struct{}
 
-func (p *proxy) forwarder(host string) http.Handler {
+func (rt *route) forwarder() http.Handler {
+	host := rt.p.host
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = "https"
 			pr.Out.URL.Host = host
 			pr.Out.Host = host
-			pr.Out.Header.Del("X-Api-Key")
+			for _, h := range rt.p.strip {
+				pr.Out.Header.Del(h)
+			}
 			pr.Out.Header.Set("Authorization", "Bearer "+pr.In.Context().Value(tokenKey{}).(string))
 		},
 		Transport:     upstream,
@@ -219,18 +229,18 @@ func (p *proxy) forwarder(host string) http.Handler {
 		start := time.Now()
 		target := fmt.Sprintf("%s https://%s%s", r.Method, host, r.URL.Path)
 
-		tok, err := p.creds.Get(r.Context())
+		tok, err := rt.creds.Get(r.Context())
 		if err != nil {
-			logf("%s → refused: no Anthropic token for %s (%s)", target, p.svids.Subject(), describe(err))
+			logf("%s → refused: no %s token for %s (%s)", target, rt.p.name, rt.svids.Subject(), describe(err))
 			writeError(w, http.StatusForbidden, "permission_error",
-				fmt.Sprintf("egress-proxy: Anthropic did not issue a token to %s (%s)", p.svids.Subject(), describe(err)))
+				fmt.Sprintf("egress-proxy: %s did not issue a token to %s (%s)", rt.p.name, rt.svids.Subject(), describe(err)))
 
 			return
 		}
 
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		rp.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), tokenKey{}, tok)))
-		logf("%s → added token %s for %s → %d (%s)", target, redact(tok), p.svids.Subject(), rec.status,
+		logf("%s → added token %s for %s → %d (%s)", target, redact(tok), rt.svids.Subject(), rec.status,
 			time.Since(start).Round(time.Millisecond))
 	})
 }
@@ -238,7 +248,7 @@ func (p *proxy) forwarder(host string) http.Handler {
 func writeError(w http.ResponseWriter, status int, typ, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	// Same shape as the Anthropic API's own errors.
+	// Same shape as the Anthropic API's own errors; OpenAI clients read error.message too.
 	var body struct {
 		Type  string `json:"type"`
 		Error struct {

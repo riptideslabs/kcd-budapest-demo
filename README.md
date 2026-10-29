@@ -34,14 +34,14 @@ webhook in [`injector/`](injector) that adds the proxy to opted-in pods.
 | Path | |
 |---|---|
 | `injector/` | The mutating admission webhook. For pods created in namespaces labeled `egress-proxy=enabled`, it adds `egress-proxy` as a native sidecar (it starts and writes its CA before the app does), the SPIRE socket and CA volumes, and `HTTPS_PROXY`, `NO_PROXY` and the CA variables for curl, Go/OpenSSL, Python and Node to every app container. It makes its own serving certificate at startup and writes the CA into its webhook configuration, so it needs no cert-manager. |
-| `proxy/` | The sidecar. Fetches the pod's JWT-SVID (`pkg/token/spiffe`), exchanges it with `rfc7523.GetAnthropicCredentials`, keeps it refreshed, and terminates TLS for `api.anthropic.com` with a per-pod CA that exists only in memory. Every other destination is refused. |
+| `proxy/` | The sidecar. Fetches the pod's JWT-SVID (`pkg/token/spiffe`), exchanges it with tokenex for each configured provider (Anthropic with `rfc7523.GetAnthropicCredentials`, OpenAI with `rfc8693.GetOpenAICredentials`), keeps the tokens refreshed, and terminates TLS for those providers' hosts with a per-pod CA that exists only in memory. Every other destination is refused. |
 | `manifests/injector/` | The injector's Deployment, Service, RBAC (patch its own webhook configuration only) and `MutatingWebhookConfiguration` (`failurePolicy: Fail`). |
 | `manifests/spire/` | SPIRE server (k8s_psat node attestation, keys on disk) and agent (k8s workload attestor). |
 | `manifests/demo/` | Namespace `support` with the `support-bot` Deployment: plain curl, nothing proxy-related. |
 | `steps/` | The stage script, one file per step. |
 | `scripts/` | Setup, reset, JWKS export and preflight. |
 | `config.env` | Trust domain, `jwt_issuer`, model. |
-| `anthropic.env` | Your Anthropic IDs (not committed; copy `anthropic.env.example`). |
+| `anthropic.env` | Your Anthropic IDs, and optionally OpenAI's (not committed; copy `anthropic.env.example`). |
 
 ## Setup
 
@@ -115,6 +115,22 @@ The same resources through the Admin API, if you prefer:
  "target": {"type": "service_account", "service_account_id": "svac_…"},
  "workspace_id": "wrkspc_…", "oauth_scope": "workspace:inference", "token_lifetime_seconds": 300}
 ```
+
+### OpenAI (optional)
+
+The proxy isn't tied to Anthropic: it adds a token for every provider whose
+IDs are in the namespace's ConfigMap. To also cover `api.openai.com`, register
+the same SPIRE issuer and the SPIFFE ID in OpenAI's workload identity settings,
+then add the IDs to `anthropic.env` and run `make reset`:
+
+```bash
+OPENAI_IDENTITY_PROVIDER_ID=…
+OPENAI_SERVICE_ACCOUNT_ID=…
+OPENAI_AUDIENCE=https://api.openai.com   # the audience you registered (this is the default)
+```
+
+The proxy then exchanges the pod's SVID at `auth.openai.com` (RFC 8693) and adds
+the token to requests for `api.openai.com`. The stage demo only uses Anthropic.
 
 ### Keys and rotation
 
